@@ -1,42 +1,26 @@
-	org 0x7c00 ;指定程序起始地址
+org 0x7c00 ;指定程序起始地址
 
 BaseOfStack 	equ 0x7c00	;定义栈指针
 BaseOfLoader 	equ 0x1000
 OffsetOfLoader 	equ 0x00	;与BaseOfLoader组合成为Loader程序的物理地址
 							;BaseOfLoader<<4+OffsetOfLoader=0x10000
 
-RootDirSectors			equ 14	;根目录扇区总数,这个数值是根据FAT12文件系统提供的信息经过计算而得
-								;(BPB_RootEntCnt*32+BPB_BytesPerSec-1)/BPB_BytesPerSec = (224×32+512 -1)/512 = 14
-SectorNumOfRootDirStart	equ 19	;根目录起始扇区号,这个数值也是通过计算而得
-								;保留扇区数+FAT表扇区数＊FAT表份数＝ 1+9*2 = 19,因为扇区编号的计数值从0开始,故根目录的起始扇区号为19
-SectorNumOfFAT1Start	equ 1	;FAT1表的起始扇区号,在FAT1表前面只有一个保留扇区(引导扇区,扇区编号是0),那么FAT1表的起始扇区号理应为1
-SectorBalance			equ 17	;用于平衡文件（或者目录）的起始簇号与数据区起始簇号的差值.
-								;因为数据区对应的有效簇号是2(FAT[2]),为了正确计算出FAT表项对应的数据区起始扇区号,则必须将FAT表项值减2
-								;或者将数据区的起始簇号(扇区号)减2(仅在每簇由一个扇区组成时可用).
-								;起始扇区号为33(根目录起始扇区号+根目录扇区总数 = 19+14 = 33）
 	jmp short Label_Start
 	nop
-	BS_OEMName 		db 'X64_boot'	;OEM字符串，必须为 8 个字符，不足会以空格填充
-	BPB_BytesPerSec dw 512			;每个扇区字节数
-	BPB_SecPerClus 	db 1			;每簇占用的扇区数
-	BPB_RsvdSecCnt 	dw 1			;Boot占用的扇区数
-	BPB_NumFATs 	db 2			;FAT表的数量
-	BPB_RootEntCnt 	dw 224			;根目录可容纳的目录项数
-	BPB_TotSec16 	dw 2880			;逻辑扇区总数
-	BPB_Media 		db 0xf0			;媒体描述符
-	BPB_FATSzl6 	dw 9			;每个FAT占用扇区数
-	BPB_SecPerTrk 	dw 18			;每个磁道扇区数
-	BPB_NumHeads 	dw 2			;磁头数
-	BPB_hiddSec 	dd 0			;隐藏扇区数
-	BPB_TotSec32 	dd 0			;若BPB_TotSec16是0，则在这里记录扇区总数
-	BS_DrvNum 		db 0			;中断 13(int 13h)的驱动器号
-	BS_Reservedl 	db 0			;未使用
-	BS_BootSig 		db 29h			;扩展引导标志
-	BS_VolID 		dd 0			;卷序列号
-	BS_VolLab		db 'boot_loader';卷标，必须为11个字符，不足会以空格填充
-	BS_FileSysType	db 'FAT12   '	;文件系统类型，必须是8个字符，不足以空格填充
+	%include "fat12.inc"
 
-;引导代码，由偏移0字节(BS_JmpBoot)跳转过来
+
+; ======= temp value
+RootDirSizeForLoop dw RootDirSectors
+SectorNo dw 0
+Odd db 0
+
+; ======= display message
+StartBootMessage : db "Start Boot"
+NoLoaderMessage : db "ERROR:No LOADER Found"
+LoaderFileName  : db "LOADER  BIN", 0
+
+; ======= 引导代码，由偏移0字节(BS_JmpBoot)跳转过来
 Label_Start:
 	mov ax, cs
 	mov ds, ax
@@ -44,7 +28,7 @@ Label_Start:
 	mov ss, ax
 	mov sp, BaseOfStack
 ; ======= clear screen
-;INT 10h, AH=06h 功能:按指定范围滚动窗口
+	;INT 10h, AH=06h 功能:按指定范围滚动窗口
 	mov ax, 0600h	;AL＝ 滚动的列数，若为0则实现清空屏幕功能
 	mov bx, 0700h	;BH＝液动后空出位置放入的属性
 					;BH ＝颜色属性。
@@ -56,13 +40,13 @@ Label_Start:
 	mov dx, 0184fh	;DH＝ 滚动范围的右下角坐标列号;DL＝ 滚动范围的右下角坐标行号
 	int 10h		
 ; ======= set focus
-;INT 10h, AH=02h 功能:设定光标位置
+	;INT 10h, AH=02h 功能:设定光标位置
 	mov ax, 0200h
 	mov bx, 0000h	;BH＝ 页码
 	mov dx, 0000h	;DH＝ 游标的列数;DL＝游标的行数
 	int 10h
 ; ======= display on screen . Start Booting ...
-;INT 10h , AH=l3h 功能:显示一行字符串。
+	;INT 10h , AH=l3h 功能:显示一行字符串。
 	mov ax, 1301h	;AL＝写入模式
 					;AL=00h:字符串的属性由BL寄存器提供,而ex寄存器提供字符串长度(以B为单位),显示后光标位置不变,即显示前的光标位置。
 					;AL=01h:同AL=00h,但光标会移动至字符串尾端位置。
@@ -83,7 +67,7 @@ Label_Start:
 	mov bp, StartBootMessage
 	int 10h
 ;======= reset floppy
-;INT 13h, AH=00h 功能:重置磁盘驱动器,为下一次读写软盘做准备
+	;INT 13h, AH=00h 功能:重置磁盘驱动器,为下一次读写软盘做准备
 	xor ah, ah
 	xor dl, dl		;DL＝驱动器号,00H～7FH:软盘:80H～0FFH:硬盘
 					;DL=00h代表第一个软盘驱动器(“drive A:”)
@@ -180,7 +164,7 @@ Label_File_Loaded:
 
 ; ======= Didn't found Loader.bin
 Label_No_LoaderBin:
-; ======= display on screen : ERROR:NO LOADER FOUND
+	; ======= display on screen : ERROR:NO LOADER FOUND
 	mov ax, 1301h
 	mov bx, 008ch
 	mov dx, 0100h
@@ -196,8 +180,8 @@ Label_No_LoaderBin:
 ; ============================== FAT12 Operation ============================== ;
 ; ======= read one sector from floppy
 Func_ReadOneSector:
-;软盘读取功能;
-;输入参数:
+	;软盘读取功能;
+	;输入参数:
 	;AX＝待读取的磁盘起始扇区号,LBA (Logical Block Address,逻辑块寻址)格式
 	;CL=读入的扇区数量
 	;ES:BX＝＞目标缓冲区起始地址
@@ -222,7 +206,7 @@ Func_ReadOneSector:
 	mov dl, [BS_DrvNum]		;DL＝驱动器号(如果操作的是硬盘驱动器,bit7必须被置位)
 
 Label_Go_On_Reading:
-;INT 13h AH= 02h 实现软盘扇区的读取操作
+	;INT 13h AH= 02h 实现软盘扇区的读取操作
 	mov ah, 2
 	mov al, byte [bp-2]	;AL＝读人的扇区数(必须非0)
 	int 13h
@@ -270,16 +254,6 @@ Label_Even_2:
 	pop bx
 	pop es
 	ret
-
-; ======= temp value
-	RootDirSizeForLoop dw RootDirSectors
-	SectorNo dw 0
-	Odd db 0
-
-; ======= display message
-	StartBootMessage : db "Start Boot"
-	NoLoaderMessage : db "ERROR:No LOADER Found"
-	LoaderFileName  : db "LOADER  BIN",0
 
 ; ======= fill zero until whole sector
 	times 510 - ($ - $$) db 0	;将当前行被编译后的地址（机器码地址）减去本节（ Section ）程序的起始地址
