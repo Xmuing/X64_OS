@@ -1,0 +1,3 @@
+[submodule "Kernel/std_libc"]
+	path = Kernel/std_libc
+	url = https://github.com/Xmuing/std_libc.git
